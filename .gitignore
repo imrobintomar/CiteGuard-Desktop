@@ -4,3 +4,4 @@ target/
 .env
 .env.keys
 *.log
+src-tauri/binaries/*
