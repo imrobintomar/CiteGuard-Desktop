@@ -53,26 +53,32 @@ export const useAuthStore = create<AuthState>((set) => ({
 export async function initAuth(): Promise<void> {
   const store = useAuthStore.getState();
 
-  let session = await loadSession();
+  try {
+    let session = await loadSession();
 
-  if (session) {
-    try {
-      if (isTokenExpired(session)) {
-        session = await refreshSession(session);
+    if (session) {
+      try {
+        if (isTokenExpired(session)) {
+          session = await refreshSession(session);
+        }
+        // Re-check email_verified — refresh endpoint always returns false for this field
+        const verified = await checkEmailVerified(session).catch(() => session!.emailVerified);
+        session = { ...session, emailVerified: verified };
+        store.setSession(session);
+        const profile = await ensureUserProfile(session);
+        useAuthStore.getState().setProfile(profile);
+      } catch {
+        await clearSession();
+        useAuthStore.getState().setSession(null);
       }
-      // Re-check email_verified — refresh endpoint always returns false for this field
-      const verified = await checkEmailVerified(session).catch(() => session!.emailVerified);
-      session = { ...session, emailVerified: verified };
-      store.setSession(session);
-      const profile = await ensureUserProfile(session);
-      useAuthStore.getState().setProfile(profile);
-    } catch {
-      await clearSession();
-      useAuthStore.getState().setSession(null);
     }
+  } catch (err) {
+    console.error("[CiteGuard] initAuth error:", err);
+  } finally {
+    // Always unblock the UI — a loading screen that never resolves is worse than
+    // showing the auth screen after an unexpected error.
+    store.setLoading(false);
   }
-
-  store.setLoading(false);
 
   window.addEventListener("cg:logout", () => {
     useAuthStore.getState().setSession(null);
