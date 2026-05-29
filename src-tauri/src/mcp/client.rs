@@ -64,7 +64,7 @@ impl McpClient {
         Ok(client)
     }
 
-    async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+    async fn send(&self, req: &JsonRpcRequest, timeout_secs: u64) -> Result<JsonRpcResponse> {
         let mut line = serde_json::to_string(req)?;
         line.push('\n');
 
@@ -75,13 +75,11 @@ impl McpClient {
         }
 
         let mut response_line = String::new();
-        // 20s timeout — MCP server fans out to multiple APIs concurrently; 20s is sufficient
-        // for even slow academic APIs without blocking the serialized stdout channel too long
-        timeout(Duration::from_secs(20), async {
+        timeout(Duration::from_secs(timeout_secs), async {
             self.stdout.lock().await.read_line(&mut response_line).await
         })
         .await
-        .map_err(|_| anyhow::anyhow!("MCP tool call timed out after 20s"))?
+        .map_err(|_| anyhow::anyhow!("MCP tool call timed out after {}s", timeout_secs))?
         .context("MCP read_line failed")?;
 
         debug!("MCP response: {}", response_line.trim());
@@ -99,7 +97,7 @@ impl McpClient {
                 "clientInfo": { "name": "citeguard-desktop", "version": "1.0.0" }
             }),
         );
-        let resp = self.send(&req).await?;
+        let resp = self.send(&req, 15).await?;
         if let Some(err) = resp.error {
             anyhow::bail!("MCP init error: {}", err.message);
         }
@@ -113,21 +111,28 @@ impl McpClient {
 
     async fn list_tools(&self) -> Result<Vec<McpTool>> {
         let req = JsonRpcRequest::new(self.next_id(), "tools/list", serde_json::json!({}));
-        let resp = self.send(&req).await?;
+        let resp = self.send(&req, 15).await?;
         let result = resp.result.context("no result from tools/list")?;
         let list: ListToolsResult = serde_json::from_value(result)?;
         Ok(list.tools)
     }
 
     /// Execute a single tool and return the text result.
+    /// `detect_hallucination` with up to 20 refs fans out to 4 providers × 20 refs in parallel
+    /// (pLimit(8) → 3 rounds × ~8s HTTP = ~24s). We give it 90s to cover slow networks.
+    /// Single-ref tools (verify_reference, repair_reference, etc.) keep the 25s budget.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<String> {
-        info!("MCP calling tool: {} args={}", tool_name, arguments);
+        let timeout_secs: u64 = match tool_name {
+            "detect_hallucination" => 90,
+            _ => 25,
+        };
+        info!("MCP calling tool: {} ({}s timeout)", tool_name, timeout_secs);
         let req = JsonRpcRequest::new(
             self.next_id(),
             "tools/call",
             serde_json::json!({ "name": tool_name, "arguments": arguments }),
         );
-        let resp = self.send(&req).await.map_err(|e| {
+        let resp = self.send(&req, timeout_secs).await.map_err(|e| {
             warn!("MCP tool '{}' failed: {}", tool_name, e);
             e
         })?;
@@ -149,7 +154,7 @@ impl McpClient {
     /// Safe to call only when no other send() is in flight (i.e. while holding the mcp Mutex).
     pub async fn ping(&self) -> bool {
         let req = JsonRpcRequest::new(self.next_id(), "tools/list", serde_json::json!({}));
-        timeout(Duration::from_secs(5), self.send(&req))
+        timeout(Duration::from_secs(5), self.send(&req, 5))
             .await
             .is_ok_and(|r| r.is_ok())
     }
