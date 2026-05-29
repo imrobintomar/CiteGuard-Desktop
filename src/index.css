@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #03051E;
+  }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2A3F9A; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #0047AB; }
+  /* Tauri drag region */
+  [data-tauri-drag-region] { -webkit-app-region: drag; }
+
+  /* ── Light theme overrides ── */
+  html.light body { background: #F0F4FF; }
+  html.light .bg-cs-base     { background-color: #F0F4FF !important; }
+  html.light .bg-cs-surface  { background-color: #FFFFFF !important; }
+  html.light .bg-cs-card     { background-color: #EEF2FF !important; }
+  html.light .bg-cs-hover    { background-color: #DDE6FF !important; }
+  html.light .border-cs-border { border-color: #C7D5F0 !important; }
+  html.light .text-cs-text   { color: #1A2360 !important; }
+  html.light .text-cs-text2  { color: #2D3F8A !important; }
+  html.light .text-cs-steel  { color: #4A5F8A !important; }
+  html.light .text-cs-dim    { color: #7A8EAA !important; }
+  html.light .text-cs-sky    { color: #0047AB !important; }
+  html.light ::-webkit-scrollbar-thumb { background: #C7D5F0; }
+}

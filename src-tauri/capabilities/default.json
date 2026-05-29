@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "default",
+  "description": "Default capability for CiteGuard Desktop",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:event:default",
+    "shell:default",
+    "shell:allow-open",
+    "store:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://**" },
+        { "url": "http://127.0.0.1:*/**" },
+        { "url": "http://localhost:*/**" }
+      ]
+    }
+  ]
+}
