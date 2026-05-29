@@ -21,16 +21,15 @@ export function getSupportedFileType(file: File): SupportedFileType | null {
 async function extractPdf(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const parts: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join(" ");
-    if (pageText.trim()) parts.push(pageText);
-  }
-  return parts.join("\n\n");
+  const pageIndices = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+  const parts = await Promise.all(
+    pageIndices.map(async (i) => {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      return content.items.map((item) => ("str" in item ? item.str : "")).join(" ");
+    })
+  );
+  return parts.filter((t) => t.trim()).join("\n\n");
 }
 
 async function extractDocx(file: File): Promise<string> {
@@ -69,6 +68,11 @@ export async function extractTextFromFile(file: File): Promise<string> {
   const type = getSupportedFileType(file);
   if (!type) throw new Error(`Unsupported file type: ${file.name}`);
 
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 50 MB.`);
+  }
+
   const TIMEOUT_MS = 30_000;
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("File extraction timed out after 30 s — the PDF may be corrupted or too large.")), TIMEOUT_MS)
@@ -92,6 +96,7 @@ const REFERENCE_SECTION_PATTERNS = [
   /\n\s*(REFERENCES|BIBLIOGRAPHY)\s*\n/,                        // all-caps (Nature, Science, Lancet)
   /\n\s*(references?|bibliography|works\s+cited|literature\s+cited|reference\s+list|citations?)\s*\n/i,
   /\n\s*(references?|bibliography)\s*\r?\n\s*\d+\./i,           // heading immediately followed by "1."
+  /\n\s*(references?|bibliography)\s*\r?\n\s*[A-Z][a-z]+,/i,   // heading followed by author-date "Smith,"
 ];
 
 // Count how many numbered references appear in a text block.
@@ -99,6 +104,16 @@ const REFERENCE_SECTION_PATTERNS = [
 function countNumberedRefs(text: string): number {
   const matches = text.match(/(?:^|\n)\s*(?:\[\d+\]|\d+[\.\)])\s+[A-Z]/g);
   return matches ? matches.length : 0;
+}
+
+// Count author-date style references (e.g. "Smith, J. (2020). Title.")
+function countAuthorDateRefs(text: string): number {
+  const matches = text.match(/(?:^|\n)\s*[A-Z][a-z]+,\s+[A-Z][a-z.,\s&]+\(\d{4}\)\./g);
+  return matches ? matches.length : 0;
+}
+
+function countAnyRefs(text: string): number {
+  return Math.max(countNumberedRefs(text), countAuthorDateRefs(text));
 }
 
 /**
@@ -121,20 +136,20 @@ export function extractReferenceSection(text: string): { refs: string; wasDetect
   // No heading found — try progressively larger windows from the end.
   // Multi-column PDFs need a bigger window because column-interleaved text
   // spreads references across a larger character span.
-  for (const fraction of [0.35, 0.45, 0.55]) {
+  for (const fraction of [0.35, 0.45, 0.55, 0.65]) {
     const start = Math.floor(text.length * (1 - fraction));
     const slice = text.slice(start).trim();
-    const count = countNumberedRefs(slice);
-    // Accept this window if it contains at least 3 numbered references
+    const count = countAnyRefs(slice);
+    // Accept this window if it contains at least 3 references (numbered or author-date)
     if (count >= 3) {
       return { refs: slice, wasDetected: false, estimatedCount: count };
     }
   }
 
-  // Last resort — take final 55%
-  const fallbackStart = Math.floor(text.length * 0.45);
+  // Last resort — take final 65%
+  const fallbackStart = Math.floor(text.length * 0.35);
   const refs = text.slice(fallbackStart).trim();
-  return { refs, wasDetected: false, estimatedCount: countNumberedRefs(refs) };
+  return { refs, wasDetected: false, estimatedCount: countAnyRefs(refs) };
 }
 
 export function buildVerificationPrompt(filename: string, text: string): string {
@@ -142,7 +157,7 @@ export function buildVerificationPrompt(filename: string, text: string): string 
 
   // Excel files: pass the full content (it's already structured)
   if (fileExt === "xlsx" || fileExt === "xls") {
-    const truncated = text.length > 40000 ? text.slice(0, 40000) + "\n\n[...truncated]" : text;
+    const truncated = text.length > 80000 ? text.slice(0, 80000) + "\n\n[...truncated]" : text;
     return [
       `I have uploaded a spreadsheet: **${filename}**`,
       ``,
@@ -163,7 +178,7 @@ export function buildVerificationPrompt(filename: string, text: string): string 
   const normalizedRefs = refs
     .replace(/\b(10\.\d{4,})\s*\/\s*/g, "$1/")
     .replace(/(\w)-\s*\n\s*([a-z])/g, "$1$2");
-  const truncated = normalizedRefs.length > 40000 ? normalizedRefs.slice(0, 40000) + "\n\n[...truncated]" : normalizedRefs;
+  const truncated = normalizedRefs.length > 80000 ? normalizedRefs.slice(0, 80000) + "\n\n[...truncated]" : normalizedRefs;
 
   const sectionNote = wasDetected
     ? `The reference section was automatically detected and extracted.`

@@ -95,10 +95,42 @@ fn build_state(app: &App) -> tauri::Result<AppState> {
     let mcp: Arc<Mutex<Option<McpClient>>> = Arc::new(Mutex::new(None));
     let mcp_clone = Arc::clone(&mcp);
 
+    // Clone paths before the first spawn consumes them
+    let bun_hc = bun_bin.clone();
+    let script_hc = mcp_script.clone();
+    let dir_hc = mcp_dir.clone();
+
     tauri::async_runtime::spawn(async move {
         match McpClient::spawn(&bun_bin, &mcp_script, &mcp_dir).await {
             Ok(client) => { *mcp_clone.lock().await = Some(client); info!("MCP ready"); }
             Err(e) => tracing::warn!("MCP unavailable: {e}"),
+        }
+    });
+
+    // Health-check loop: every 60 s acquire the mcp lock (after any active chat finishes)
+    // and ping the MCP subprocess. On failure, respawn it automatically.
+    let mcp_hc = Arc::clone(&mcp);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await; // let initial spawn settle
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            let alive = {
+                let guard = mcp_hc.lock().await;
+                match guard.as_ref() {
+                    Some(client) => client.ping().await,
+                    None => false,
+                }
+            };
+            if !alive {
+                tracing::warn!("MCP health-check failed — respawning");
+                match McpClient::spawn(&bun_hc, &script_hc, &dir_hc).await {
+                    Ok(client) => {
+                        *mcp_hc.lock().await = Some(client);
+                        info!("MCP respawned successfully");
+                    }
+                    Err(e) => tracing::warn!("MCP respawn failed: {e}"),
+                }
+            }
         }
     });
 

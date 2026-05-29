@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ollama::types::{ChatRequest, Message, Tool, ToolFunction};
 use crate::AppState;
@@ -90,8 +90,22 @@ async fn run_chat_loop(
         dbg(&format!("MCP tools available: {}", m.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")));
     }
 
-    // Tool-call loop — max 5 rounds to prevent infinite loops
-    for round in 0..5 {
+    // Warn when the conversation is approaching Qwen3:14b's 32K context limit.
+    // Rough estimate: 4 chars ≈ 1 token; warn at 28K tokens to leave headroom.
+    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+    let estimated_tokens = total_chars / 4;
+    if estimated_tokens > 28_000 {
+        warn!("Context near limit: ~{estimated_tokens} tokens estimated — model may truncate");
+        let _ = app.emit("chat-warning", serde_json::json!({
+            "message": format!(
+                "Your manuscript is very large (~{} tokens estimated). The model may not be able to verify all references in one pass. Consider splitting it into sections.",
+                estimated_tokens
+            )
+        }));
+    }
+
+    // Tool-call loop — max 12 rounds (large manuscripts may have 100+ references requiring many verify_reference calls)
+    for round in 0..12 {
         dbg(&format!("Round {round}: calling stream_chat with {} messages", messages.len()));
         let request = ChatRequest {
             model: args.model.clone(),

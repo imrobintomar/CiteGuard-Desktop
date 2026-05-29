@@ -2,9 +2,27 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const API_KEY: &str = "AIzaSyCsFTRm77Q1nUtWVmzRTvBEum6w_K2pJOw";
-const FIRESTORE_BASE: &str =
-    "https://firestore.googleapis.com/v1/projects/citeguarddesktop/databases/(default)/documents";
+// Keys are injected at compile time via environment variables (never hardcoded).
+// Set FIREBASE_API_KEY and FIREBASE_PROJECT_ID in .env.keys (git-ignored).
+// The binary will fail at runtime (not compile time) if the key is empty,
+// surfacing a clear error rather than silently using a leaked credential.
+const API_KEY: &str = match option_env!("FIREBASE_API_KEY") { Some(k) => k, None => "" };
+const FIREBASE_PROJECT: &str = match option_env!("FIREBASE_PROJECT_ID") { Some(k) => k, None => "citeguarddesktop" };
+
+fn firestore_base() -> String {
+    format!(
+        "https://firestore.googleapis.com/v1/projects/{}/databases/(default)/documents",
+        FIREBASE_PROJECT
+    )
+}
+
+fn require_api_key() -> Result<&'static str, String> {
+    if API_KEY.is_empty() {
+        Err("Firebase API key not configured. Set FIREBASE_API_KEY at build time.".into())
+    } else {
+        Ok(API_KEY)
+    }
+}
 
 // ── Auth types ────────────────────────────────────────────────────────────────
 
@@ -128,9 +146,10 @@ fn parse_session(json: &Value, existing_refresh: Option<&str>) -> Result<UserSes
 
 #[tauri::command]
 pub async fn firebase_sign_up(email: String, password: String) -> Result<UserSession, String> {
+    let key = require_api_key()?;
     let url = format!(
         "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={}",
-        API_KEY
+        key
     );
     let client = Client::new();
     let resp: Value = client
@@ -152,9 +171,10 @@ pub async fn firebase_sign_up(email: String, password: String) -> Result<UserSes
 
 #[tauri::command]
 pub async fn firebase_sign_in(email: String, password: String) -> Result<UserSession, String> {
+    let key = require_api_key()?;
     let url = format!(
         "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={}",
-        API_KEY
+        key
     );
     let client = Client::new();
     let resp: Value = client
@@ -176,9 +196,10 @@ pub async fn firebase_sign_in(email: String, password: String) -> Result<UserSes
 
 #[tauri::command]
 pub async fn firebase_refresh_token(refresh_token: String) -> Result<UserSession, String> {
+    let key = require_api_key()?;
     let url = format!(
         "https://securetoken.googleapis.com/v1/token?key={}",
-        API_KEY
+        key
     );
     let client = Client::new();
     let resp: Value = client
@@ -218,9 +239,10 @@ pub async fn firebase_refresh_token(refresh_token: String) -> Result<UserSession
 /// Send a verification email to the signed-in user.
 #[tauri::command]
 pub async fn firebase_send_verification(id_token: String) -> Result<(), String> {
+    let key = require_api_key()?;
     let url = format!(
         "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={}",
-        API_KEY
+        key
     );
     let client = Client::new();
     let resp: Value = client
@@ -243,9 +265,10 @@ pub async fn firebase_send_verification(id_token: String) -> Result<(), String> 
 /// Check whether the current user's email is verified.
 #[tauri::command]
 pub async fn firebase_check_verified(id_token: String) -> Result<bool, String> {
+    let key = require_api_key()?;
     let url = format!(
         "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={}",
-        API_KEY
+        key
     );
     let client = Client::new();
     let resp: Value = client
@@ -304,7 +327,7 @@ pub async fn firestore_get_profile(
     uid: String,
     id_token: String,
 ) -> Result<Option<UserProfile>, String> {
-    let url = format!("{}/users/{}", FIRESTORE_BASE, uid);
+    let url = format!("{}/users/{}", firestore_base(), uid);
     let client = Client::new();
     let resp = client
         .get(&url)
@@ -351,7 +374,7 @@ pub async fn firestore_ensure_profile(
         total_verifications: 0,
     };
 
-    let url = format!("{}/users/{}?documentId={}", FIRESTORE_BASE, uid, uid);
+    let url = format!("{}/users/{}?documentId={}", firestore_base(), uid, uid);
     let client = Client::new();
     client
         .patch(&url)
@@ -421,7 +444,7 @@ pub async fn firestore_upgrade_to_lifetime(
         ..profile
     };
 
-    let url = format!("{}/users/{}", FIRESTORE_BASE, uid);
+    let url = format!("{}/users/{}", firestore_base(), uid);
     let client = Client::new();
     client
         .patch(&url)
@@ -458,7 +481,7 @@ pub async fn firestore_record_verification(
         ..profile
     };
 
-    let url = format!("{}/users/{}", FIRESTORE_BASE, uid);
+    let url = format!("{}/users/{}", firestore_base(), uid);
     let client = Client::new();
     client
         .patch(&url)

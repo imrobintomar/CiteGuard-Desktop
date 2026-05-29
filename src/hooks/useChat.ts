@@ -8,7 +8,7 @@ import { useModelStore } from "../stores/modelStore";
 import { getFreshSession } from "../stores/authStore";
 import { canVerify, recordVerification } from "../lib/firebase";
 
-const STREAM_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes — large batches (26 refs) can take 10-15 min
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes — resets on each token, so long responses still complete
 
 export function useChat() {
   const store = useChatStore();

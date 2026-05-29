@@ -75,12 +75,13 @@ impl McpClient {
         }
 
         let mut response_line = String::new();
-        // 90s timeout — external APIs (Semantic Scholar 1 RPS, PubMed) can be slow
-        timeout(Duration::from_secs(90), async {
+        // 20s timeout — MCP server fans out to multiple APIs concurrently; 20s is sufficient
+        // for even slow academic APIs without blocking the serialized stdout channel too long
+        timeout(Duration::from_secs(20), async {
             self.stdout.lock().await.read_line(&mut response_line).await
         })
         .await
-        .map_err(|_| anyhow::anyhow!("MCP tool call timed out after 90s"))?
+        .map_err(|_| anyhow::anyhow!("MCP tool call timed out after 20s"))?
         .context("MCP read_line failed")?;
 
         debug!("MCP response: {}", response_line.trim());
@@ -142,6 +143,15 @@ impl McpClient {
             .collect::<Vec<_>>()
             .join("");
         Ok(text)
+    }
+
+    /// Cheap liveness check: sends tools/list with a 5-second cap.
+    /// Safe to call only when no other send() is in flight (i.e. while holding the mcp Mutex).
+    pub async fn ping(&self) -> bool {
+        let req = JsonRpcRequest::new(self.next_id(), "tools/list", serde_json::json!({}));
+        timeout(Duration::from_secs(5), self.send(&req))
+            .await
+            .is_ok_and(|r| r.is_ok())
     }
 
     fn next_id(&self) -> u64 {

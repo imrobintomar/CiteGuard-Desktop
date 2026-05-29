@@ -61,6 +61,12 @@ export function ChatWindow() {
       return;
     }
 
+    const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+    if (file.size > MAX_FILE_BYTES) {
+      setFileError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 50 MB.`);
+      return;
+    }
+
     setFileLoading(true);
     setFileError(null);
     clearFile();
@@ -190,7 +196,7 @@ export function ChatWindow() {
             ref={textareaRef}
             rows={1}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { if (e.target.value.length <= 100_000) setInput(e.target.value); }}
             onKeyDown={onKeyDown}
             onInput={onInput}
             disabled={disabled}

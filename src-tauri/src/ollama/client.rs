@@ -1,21 +1,19 @@
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
-use std::io::Write;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tracing::warn;
 
 use super::types::*;
 
+#[cfg(debug_assertions)]
 fn dbg(msg: &str) {
-    eprintln!("[CG] {msg}");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/cg-debug.log") {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-        let _ = writeln!(f, "[{ts}] ollama: {msg}");
-    }
+    eprintln!("[CG-ollama] {msg}");
 }
+
+#[cfg(not(debug_assertions))]
+fn dbg(_msg: &str) {}
 
 pub const BASE_URL: &str = "http://127.0.0.1:11435";
 
