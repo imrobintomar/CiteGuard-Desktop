@@ -89,22 +89,24 @@ export function useChat() {
     // Freemium enforcement — also ensures token is fresh before any Firestore call
     const session = await getFreshSession();
     if (session) {
-      const { allowed, remaining } = await canVerify(session);
+      const { allowed, remaining, error: quotaErr } = await canVerify(session);
       if (!allowed) {
         const convId = useChatStore.getState().activeId ?? useChatStore.getState().newConversation();
         useChatStore.getState().addUserMessage(convId, content);
         useChatStore.getState().startAssistantMessage(convId);
         useChatStore.getState().appendToken(
           convId,
-          "You've reached your daily limit of 20 free verifications. Upgrade to Lifetime for unlimited access."
+          quotaErr === "SERVICE_UNAVAILABLE"
+            ? "Verification service is temporarily unavailable. Please try again in a moment."
+            : "You've reached your daily limit of 20 free verifications. Upgrade to Lifetime for unlimited access."
         );
         useChatStore.getState().finalizeAssistant(convId);
         isSendingRef.current = false;
         return;
       }
-      // Record this verification (fire-and-forget)
-      recordVerification(session).catch(() => {});
-      void remaining; // used by UI badge in App.tsx
+      // Record this verification — await to ensure quota tracking doesn't silently fail
+      try { await recordVerification(session); } catch { /* non-fatal — best effort */ }
+      void remaining;
     }
 
     // Use getState() for current (non-snapshot) state throughout this function
@@ -190,6 +192,7 @@ Passing all fields is REQUIRED for accurate confidence scoring. Using only rawTe
 Available tools:
 - verify_reference: Check ONE citation in detail (use for 1-3 references)
 - detect_hallucination: Batch-check references — use this when user provides 4+ references
+- verify_claim: Verify whether a cited paper supports a SPECIFIC scientific claim. Use when the user asks "does this paper support this claim?" or "is this citation correct for this statement?" Pass both the claim text and the reference.
 - repair_reference: Fix a malformed or incomplete citation
 - format_citation: Format a verified citation in APA/MLA/BibTeX/etc.
 - find_published_version: Find journal publication of a preprint

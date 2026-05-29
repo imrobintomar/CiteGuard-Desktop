@@ -16,7 +16,7 @@ use super::protocol::*;
 pub struct McpClient {
     stdin: Arc<Mutex<ChildStdin>>,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
-    _process: Child,
+    process: Child,
     id_counter: AtomicU64,
     pub tools: Vec<McpTool>,
 }
@@ -52,7 +52,7 @@ impl McpClient {
         let mut client = Self {
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
-            _process: child,
+            process: child,
             id_counter: AtomicU64::new(1),
             tools: Vec::new(),
         };
@@ -152,6 +152,13 @@ impl McpClient {
         timeout(Duration::from_secs(5), self.send(&req))
             .await
             .is_ok_and(|r| r.is_ok())
+    }
+
+    /// Kill the subprocess and reap it, preventing zombie processes.
+    /// Must be called before replacing a dead McpClient with a fresh one.
+    pub async fn shutdown(mut self) {
+        let _ = self.process.kill().await;
+        let _ = self.process.wait().await;
     }
 
     fn next_id(&self) -> u64 {

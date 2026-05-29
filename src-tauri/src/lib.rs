@@ -13,10 +13,13 @@ use commands::settings::AppSettings;
 use mcp::McpClient;
 use ollama::OllamaManager;
 
+/// Holds the active user session in Rust memory — tokens never touch the browser's localStorage.
+/// Only uid and email are persisted to disk (via tauri-plugin-store); secrets live here only.
 pub struct AppState {
     pub ollama: Arc<OllamaManager>,
     pub mcp: Arc<Mutex<Option<McpClient>>>,
     pub settings: Arc<Mutex<AppSettings>>,
+    pub session: Arc<Mutex<Option<commands::firebase::UserSession>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -64,8 +67,10 @@ pub fn run() {
             commands::firebase::firestore_get_profile,
             commands::firebase::firestore_ensure_profile,
             commands::firebase::firestore_record_verification,
-            commands::firebase::firestore_upgrade_to_lifetime,
             commands::firebase::razorpay_verify_payment,
+            commands::firebase::store_session,
+            commands::firebase::get_stored_session,
+            commands::firebase::clear_stored_session,
         ])
         .run(tauri::generate_context!())
         .expect("error running CiteGuard");
@@ -123,6 +128,9 @@ fn build_state(app: &App) -> tauri::Result<AppState> {
             };
             if !alive {
                 tracing::warn!("MCP health-check failed — respawning");
+                // Kill the old process before spawning a replacement to prevent zombies
+                let old = mcp_hc.lock().await.take();
+                if let Some(dead) = old { dead.shutdown().await; }
                 match McpClient::spawn(&bun_hc, &script_hc, &dir_hc).await {
                     Ok(client) => {
                         *mcp_hc.lock().await = Some(client);
@@ -151,6 +159,7 @@ fn build_state(app: &App) -> tauri::Result<AppState> {
         ollama,
         mcp,
         settings: Arc::new(Mutex::new(AppSettings::default())),
+        session: Arc::new(Mutex::new(None)),
     })
 }
 

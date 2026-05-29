@@ -1,6 +1,17 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+use tauri::State;
+
+use crate::AppState;
+
+// Shared HTTP client — created once, reused for all Firebase/Firestore requests.
+// reqwest::Client holds a connection pool internally; recreating it per-call wastes connections.
+static HTTP: OnceLock<Client> = OnceLock::new();
+fn http() -> &'static Client {
+    HTTP.get_or_init(Client::new)
+}
 
 // Keys are injected at compile time via environment variables (never hardcoded).
 // Set FIREBASE_API_KEY and FIREBASE_PROJECT_ID in .env.keys (git-ignored).
@@ -151,8 +162,8 @@ pub async fn firebase_sign_up(email: String, password: String) -> Result<UserSes
         "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={}",
         key
     );
-    let client = Client::new();
-    let resp: Value = client
+    
+    let resp: Value = http()
         .post(&url)
         .json(&json!({ "email": email, "password": password, "returnSecureToken": true }))
         .send()
@@ -176,8 +187,8 @@ pub async fn firebase_sign_in(email: String, password: String) -> Result<UserSes
         "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={}",
         key
     );
-    let client = Client::new();
-    let resp: Value = client
+    
+    let resp: Value = http()
         .post(&url)
         .json(&json!({ "email": email, "password": password, "returnSecureToken": true }))
         .send()
@@ -201,8 +212,8 @@ pub async fn firebase_refresh_token(refresh_token: String) -> Result<UserSession
         "https://securetoken.googleapis.com/v1/token?key={}",
         key
     );
-    let client = Client::new();
-    let resp: Value = client
+    
+    let resp: Value = http()
         .post(&url)
         .form(&[("grant_type", "refresh_token"), ("refresh_token", &refresh_token)])
         .send()
@@ -244,8 +255,8 @@ pub async fn firebase_send_verification(id_token: String) -> Result<(), String> 
         "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={}",
         key
     );
-    let client = Client::new();
-    let resp: Value = client
+    
+    let resp: Value = http()
         .post(&url)
         .json(&json!({ "requestType": "VERIFY_EMAIL", "idToken": id_token }))
         .send()
@@ -270,8 +281,8 @@ pub async fn firebase_check_verified(id_token: String) -> Result<bool, String> {
         "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={}",
         key
     );
-    let client = Client::new();
-    let resp: Value = client
+    
+    let resp: Value = http()
         .post(&url)
         .json(&json!({ "idToken": id_token }))
         .send()
@@ -328,21 +339,26 @@ pub async fn firestore_get_profile(
     id_token: String,
 ) -> Result<Option<UserProfile>, String> {
     let url = format!("{}/users/{}", firestore_base(), uid);
-    let client = Client::new();
-    let resp = client
+    
+    let resp = http()
         .get(&url)
         .bearer_auth(&id_token)
         .send()
         .await
         .map_err(|e| e.to_string())?;
 
-    if resp.status().as_u16() == 404 {
+    let status = resp.status().as_u16();
+    if status == 404 {
         return Ok(None);
     }
 
     let json: Value = resp.json().await.map_err(|e| e.to_string())?;
-    if json.get("error").is_some() {
-        return Ok(None);
+    if let Some(err) = json.get("error") {
+        let code = err["code"].as_u64().unwrap_or(0);
+        let msg = err["message"].as_str().unwrap_or("Firestore error");
+        // 404 via error body = missing document — not an error, just absent
+        if code == 404 { return Ok(None); }
+        return Err(format!("firestore/{}: {}", code, msg));
     }
 
     let f = json.get("fields").ok_or("No fields")?;
@@ -375,8 +391,8 @@ pub async fn firestore_ensure_profile(
     };
 
     let url = format!("{}/users/{}?documentId={}", firestore_base(), uid, uid);
-    let client = Client::new();
-    client
+    
+    http()
         .patch(&url)
         .bearer_auth(&id_token)
         .json(&build_profile_fields(&profile))
@@ -406,8 +422,8 @@ pub async fn razorpay_verify_payment(
     }
 
     let url = format!("https://api.razorpay.com/v1/payments/{}", payment_id);
-    let client = Client::new();
-    let resp: serde_json::Value = client
+    
+    let resp: serde_json::Value = http()
         .get(&url)
         .basic_auth(key_id, Some(key_secret))
         .send()
@@ -430,8 +446,9 @@ pub async fn razorpay_verify_payment(
     firestore_upgrade_to_lifetime(uid, id_token).await
 }
 
-#[tauri::command]
-pub async fn firestore_upgrade_to_lifetime(
+// Internal only — NOT a Tauri command. Called exclusively by razorpay_verify_payment
+// after server-side payment confirmation. Never expose this as an IPC endpoint.
+pub(crate) async fn firestore_upgrade_to_lifetime(
     uid: String,
     id_token: String,
 ) -> Result<UserProfile, String> {
@@ -445,8 +462,8 @@ pub async fn firestore_upgrade_to_lifetime(
     };
 
     let url = format!("{}/users/{}", firestore_base(), uid);
-    let client = Client::new();
-    client
+    
+    http()
         .patch(&url)
         .bearer_auth(&id_token)
         .json(&build_profile_fields(&upgraded))
@@ -482,8 +499,8 @@ pub async fn firestore_record_verification(
     };
 
     let url = format!("{}/users/{}", firestore_base(), uid);
-    let client = Client::new();
-    client
+    
+    http()
         .patch(&url)
         .bearer_auth(&id_token)
         .json(&build_profile_fields(&updated))
@@ -492,4 +509,104 @@ pub async fn firestore_record_verification(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+// ── Session management (tokens stored in Rust memory, never in browser storage) ──
+
+/// Store a session in AppState. Frontend must call this after sign-in/refresh.
+/// Only uid and email should be persisted to disk by the frontend (not the tokens).
+#[tauri::command]
+pub async fn store_session(
+    state: State<'_, AppState>,
+    session: UserSession,
+) -> Result<(), String> {
+    *state.session.lock().await = Some(session);
+    Ok(())
+}
+
+/// Retrieve the active session from AppState. Returns None if not signed in.
+#[tauri::command]
+pub async fn get_stored_session(
+    state: State<'_, AppState>,
+) -> Result<Option<UserSession>, String> {
+    Ok(state.session.lock().await.clone())
+}
+
+/// Clear the stored session (sign-out).
+#[tauri::command]
+pub async fn clear_stored_session(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    *state.session.lock().await = None;
+    Ok(())
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_firebase_error_invalid_credential() {
+        assert_eq!(map_firebase_error("INVALID_LOGIN_CREDENTIALS"), "auth/invalid-credential");
+        assert_eq!(map_firebase_error("EMAIL_NOT_FOUND"), "auth/invalid-credential");
+        assert_eq!(map_firebase_error("INVALID_PASSWORD"), "auth/invalid-credential");
+    }
+
+    #[test]
+    fn map_firebase_error_email_exists() {
+        assert_eq!(map_firebase_error("EMAIL_EXISTS"), "auth/email-already-in-use");
+    }
+
+    #[test]
+    fn map_firebase_error_weak_password() {
+        assert!(map_firebase_error("WEAK_PASSWORD : must be 8+ chars").starts_with("auth/weak-password"));
+    }
+
+    #[test]
+    fn map_firebase_error_unknown() {
+        assert!(map_firebase_error("SOME_NOVEL_CODE").starts_with("auth/unknown"));
+    }
+
+    #[test]
+    fn base64url_decode_hello() {
+        // "hello" in base64url = "aGVsbG8"
+        assert_eq!(base64url_decode("aGVsbG8"), b"hello");
+    }
+
+    #[test]
+    fn base64url_decode_empty() {
+        assert_eq!(base64url_decode(""), b"");
+    }
+
+    #[test]
+    fn email_verified_from_jwt_garbage_returns_false() {
+        assert!(!email_verified_from_jwt(""));
+        assert!(!email_verified_from_jwt("not.a.jwt"));
+        assert!(!email_verified_from_jwt("a.b")); // only 2 parts
+    }
+
+    #[test]
+    fn require_api_key_fails_when_empty_at_build_time() {
+        // Only meaningful when FIREBASE_API_KEY is not set during compilation.
+        // In CI with the key set, this branch is skipped.
+        if option_env!("FIREBASE_API_KEY").unwrap_or("").is_empty() {
+            assert!(require_api_key().is_err());
+        }
+    }
+
+    #[test]
+    fn firestore_base_contains_project_id() {
+        let base = firestore_base();
+        assert!(base.contains("firestore.googleapis.com"));
+        assert!(base.contains("citeguarddesktop")); // default when env not set
+    }
+
+    #[test]
+    fn now_secs_is_reasonable() {
+        let t = now_secs();
+        // Must be after 2024-01-01 Unix timestamp
+        assert!(t > 1_700_000_000);
+    }
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MailCheck, RefreshCw, LogOut, Loader2 } from "lucide-react";
 import { sendVerificationEmail, checkEmailVerified, logOut } from "../../lib/firebase";
+import { invoke } from "@tauri-apps/api/core";
 import { useAuthStore } from "../../stores/authStore";
 import { ensureUserProfile } from "../../lib/firebase";
 
@@ -29,8 +30,7 @@ export function VerifyEmailScreen() {
       if (verified) {
         const updated = { ...session, emailVerified: true };
         setSession(updated);
-        // save updated session
-        localStorage.setItem("cg_session", JSON.stringify(updated));
+        await invoke("store_session", { session: updated });
         const profile = await ensureUserProfile(updated);
         setProfile(profile);
       } else {
